@@ -18,6 +18,9 @@ const session = require('express-session');
 const cors = require('cors');
 const path = require('path');
 const crypto = require('crypto');
+const { fetch, ProxyAgent } = require('undici');
+// Usa o fetch exportado pelo pacote undici (não o global do Node) porque só
+// ele respeita a opção "dispatcher" usada para rotear pelo proxy do DJEN.
 const auth = require('./auth');
 const db = require('./db');
 const dataRoutes = require('./dataRoutes');
@@ -44,6 +47,22 @@ function mensagemErroDJEN(textoResposta) {
     return 'A API do DJEN bloqueia acesso de fora do Brasil (CloudFront). Isso é uma restrição de rede do próprio DJEN, não um erro do sistema — funciona normalmente se o servidor estiver hospedado no Brasil ou você acessar localmente.';
   }
   return 'A API do DJEN retornou uma resposta inesperada.';
+}
+
+// Proxy HTTP opcional (com saída no Brasil) só para as chamadas ao DJEN —
+// contorna o bloqueio por país do CloudFront sem afetar o DataJud, que
+// já funciona normalmente de qualquer região.
+// Formato esperado: http://usuario:senha@host:porta
+const DJEN_PROXY_URL = process.env.DJEN_PROXY_URL || '';
+const djenProxyAgent = DJEN_PROXY_URL ? new ProxyAgent(DJEN_PROXY_URL) : null;
+
+if (DJEN_PROXY_URL) {
+  console.log(`[INFO] Proxy configurado para chamadas ao DJEN: ${new URL(DJEN_PROXY_URL).hostname}`);
+}
+
+/** Opções extras de fetch para rotear uma requisição pelo proxy do DJEN, se configurado */
+function opcoesProxyDJEN() {
+  return djenProxyAgent ? { dispatcher: djenProxyAgent } : {};
 }
 
 // Segredo de sessão gerado a cada início do servidor. Como o armazenamento
@@ -366,6 +385,7 @@ app.get('/api/djen/comunicacao', requireAuth, async (req, res) => {
       method: 'GET',
       headers: { 'Accept': 'application/json', 'User-Agent': USER_AGENT },
       signal: controller.signal,
+      ...opcoesProxyDJEN(),
     });
 
     clearTimeout(timeoutId);
@@ -433,6 +453,7 @@ app.get('/api/djen/tribunais', requireAuth, async (req, res) => {
       method: 'GET',
       headers: { 'Accept': 'application/json', 'User-Agent': USER_AGENT },
       signal: controller.signal,
+      ...opcoesProxyDJEN(),
     });
 
     clearTimeout(timeoutId);
@@ -468,6 +489,7 @@ app.get('/api/djen/caderno/:sigla/:data/:meio', requireAuth, async (req, res) =>
       method: 'GET',
       headers: { 'Accept': 'application/json', 'User-Agent': USER_AGENT },
       signal: controller.signal,
+      ...opcoesProxyDJEN(),
     });
 
     clearTimeout(timeoutId);
