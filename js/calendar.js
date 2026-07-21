@@ -293,19 +293,19 @@ function handleMarcarCumprido(prazoId) {
     marcarPrazoCumprido(prazoId);
     closeModal();
     renderCalendar();
-    // Atualiza o dashboard se estiver visível
-    if (typeof renderDashboard === 'function') {
-        renderDashboard();
-    }
-    showToast('Prazo marcado como cumprido!', 'success');
+    showToast('Prazo marcado como cumprido!', 'success', 6000, {
+        label: 'Desfazer',
+        onClick: () => {
+            marcarPrazoPendente(prazoId);
+            renderCalendar();
+            showToast('Prazo reaberto.', 'info');
+        }
+    });
 }
 
 function handleMarcarPendente(prazoId) {
     marcarPrazoPendente(prazoId);
     closeModal();
     renderCalendar();
-    if (typeof renderDashboard === 'function') {
-        renderDashboard();
-    }
     showToast('Prazo reaberto.', 'info');
 }

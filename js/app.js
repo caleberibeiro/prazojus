@@ -293,8 +293,15 @@ function renderDeadlineList(prazos) {
 
 function handleDashboardCumprido(prazoId) {
     marcarPrazoCumprido(prazoId);
-    renderDashboard();
-    showToast('Prazo marcado como cumprido!', 'success');
+    renderPage(appState.currentPage);
+    showToast('Prazo marcado como cumprido!', 'success', 6000, {
+        label: 'Desfazer',
+        onClick: () => {
+            marcarPrazoPendente(prazoId);
+            renderPage(appState.currentPage);
+            showToast('Prazo reaberto.', 'info');
+        }
+    });
 }
 
 function handleDeletePrazo(prazoId) {
@@ -666,7 +673,7 @@ function renderProcessoDetails(processo, prazos) {
                     <span class="badge ${urgency.className}">${urgency.label}</span>
                     <div style="display: flex; gap: 0.25rem; margin-left: 0.5rem;" onclick="event.stopPropagation()">
                         ${prazo.status !== 'cumprido'
-                            ? `<button class="btn btn-sm btn-success" onclick="handleDashboardCumprido('${prazo.id}'); renderProcessos();">✓</button>`
+                            ? `<button class="btn btn-sm btn-success" onclick="handleDashboardCumprido('${prazo.id}')">✓</button>`
                             : `<button class="btn btn-sm btn-secondary" onclick="marcarPrazoPendente('${prazo.id}'); renderProcessos();">↩</button>`
                         }
                         <button class="btn btn-sm btn-danger" onclick="handleDeletePrazo('${prazo.id}'); renderProcessos();">✕</button>
@@ -2718,7 +2725,7 @@ function renderNotificacoesList(prazos) {
                     <div class="countdown-date">${formatDate(new Date(prazo.dataFim))}</div>
                 </div>
                 <div class="deadline-actions">
-                    <button class="btn btn-sm btn-success" onclick="handleDashboardCumprido('${prazo.id}'); renderNotificacoes();" title="Marcar cumprido">✓</button>
+                    <button class="btn btn-sm btn-success" onclick="handleDashboardCumprido('${prazo.id}')" title="Marcar cumprido">✓</button>
                 </div>
             </div>
         `;

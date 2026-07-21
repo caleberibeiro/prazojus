@@ -543,8 +543,9 @@ function escapeHtml(str) {
  * @param {string} message - Mensagem a ser exibida
  * @param {string} [type='info'] - Tipo do toast (success|error|warning|info)
  * @param {number} [duration=4000] - Duração em milissegundos antes de desaparecer
+ * @param {{label: string, onClick: Function}} [action] - Botão de ação opcional (ex: "Desfazer")
  */
-function showToast(message, type = 'info', duration = 4000) {
+function showToast(message, type = 'info', duration = 4000, action = null) {
     // Busca ou cria o container de toasts
     let container = document.getElementById('toast-container');
     if (!container) {
@@ -582,8 +583,18 @@ function showToast(message, type = 'info', duration = 4000) {
     toast.innerHTML = `
         <span class="toast-icon">${icones[type] || icones.info}</span>
         <span class="toast-message">${escapeHtml(message)}</span>
+        ${action ? `<button class="toast-action">${escapeHtml(action.label)}</button>` : ''}
         <button class="toast-close" aria-label="Fechar notificação">&times;</button>
     `;
+
+    // Botão de ação (ex: "Desfazer") — executa o callback e fecha o toast
+    if (action && typeof action.onClick === 'function') {
+        const btnAcao = toast.querySelector('.toast-action');
+        btnAcao.addEventListener('click', () => {
+            action.onClick();
+            removerToast(toast);
+        });
+    }
 
     // Botão de fechar
     const btnFechar = toast.querySelector('.toast-close');
