@@ -33,6 +33,19 @@ const TIMEOUT_MS = 30_000; // 30 segundos de timeout para requisições
 // do que de conexões residenciais, por isso o problema não aparece local.
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
+/**
+ * O DJEN roda atrás de um CloudFront configurado para bloquear por país —
+ * de fora do Brasil (ex: Render hospedado nos EUA), a resposta é uma página
+ * de erro da AWS, não da API. Detecta esse caso pra dar uma mensagem
+ * honesta em vez de "resposta inesperada".
+ */
+function mensagemErroDJEN(textoResposta) {
+  if (/CloudFront distribution is configured to block access from your country/i.test(textoResposta)) {
+    return 'A API do DJEN bloqueia acesso de fora do Brasil (CloudFront). Isso é uma restrição de rede do próprio DJEN, não um erro do sistema — funciona normalmente se o servidor estiver hospedado no Brasil ou você acessar localmente.';
+  }
+  return 'A API do DJEN retornou uma resposta inesperada.';
+}
+
 // Segredo de sessão gerado a cada início do servidor. Como o armazenamento
 // de sessões é em memória (reinicia junto com o servidor), não há motivo
 // para persistir esse valor em disco.
@@ -374,7 +387,7 @@ app.get('/api/djen/comunicacao', requireAuth, async (req, res) => {
       console.error(`[ERRO] DJEN (comunicacao) respondeu status ${respostaDJEN.status} com corpo não-JSON: ${textoResposta.substring(0, 300)}`);
       dados = {
         erro: true,
-        mensagem: 'A API do DJEN retornou uma resposta inesperada.',
+        mensagem: mensagemErroDJEN(textoResposta),
         detalhes: textoResposta.substring(0, 500),
       };
     }
@@ -429,7 +442,7 @@ app.get('/api/djen/tribunais', requireAuth, async (req, res) => {
       dados = JSON.parse(textoResposta);
     } catch {
       console.error(`[ERRO] DJEN (tribunais) respondeu status ${resposta.status} com corpo não-JSON: ${textoResposta.substring(0, 300)}`);
-      dados = { erro: true, mensagem: 'A API do DJEN retornou uma resposta inesperada.', detalhes: textoResposta.substring(0, 500) };
+      dados = { erro: true, mensagem: mensagemErroDJEN(textoResposta), detalhes: textoResposta.substring(0, 500) };
     }
     return res.status(resposta.status).json(dados);
 
@@ -464,7 +477,7 @@ app.get('/api/djen/caderno/:sigla/:data/:meio', requireAuth, async (req, res) =>
       dados = JSON.parse(textoResposta);
     } catch {
       console.error(`[ERRO] DJEN (caderno) respondeu status ${resposta.status} com corpo não-JSON: ${textoResposta.substring(0, 300)}`);
-      dados = { erro: true, mensagem: 'A API do DJEN retornou uma resposta inesperada.', detalhes: textoResposta.substring(0, 500) };
+      dados = { erro: true, mensagem: mensagemErroDJEN(textoResposta), detalhes: textoResposta.substring(0, 500) };
     }
     return res.status(resposta.status).json(dados);
 
