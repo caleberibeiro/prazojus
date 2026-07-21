@@ -28,7 +28,11 @@ document.addEventListener('DOMContentLoaded', () => {
 async function loadCurrentUser() {
     try {
         const response = await fetch('/api/auth/me');
-        if (!response.ok) return;
+        if (!response.ok) {
+            // Sem sessão (ex: login desativado no servidor) — esconde o bloco de usuário
+            document.getElementById('sidebar-user')?.classList.add('hidden');
+            return;
+        }
 
         const usuario = await response.json();
         appState.currentUser = usuario;

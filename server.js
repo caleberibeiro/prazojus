@@ -76,8 +76,12 @@ app.use((req, _res, next) => {
   next();
 });
 
+// Login desativado: para reativar, troque para true (o restante do sistema
+// de contas/sessão continua intacto e funcionando normalmente).
+const AUTH_ENABLED = false;
+
 function requireAuth(req, res, next) {
-  if (req.usuario) return next();
+  if (!AUTH_ENABLED || req.usuario) return next();
 
   // Requisições de API recebem 401 JSON; navegação de página vai pro login
   if (req.path.startsWith('/api/')) {
