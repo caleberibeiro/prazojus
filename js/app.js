@@ -14,12 +14,53 @@ let appState = {
 // Inicialização
 // ============================================================
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     initRouter();
     initSidebar();
     loadCurrentUser();
+
+    const main = document.getElementById('main-content');
+
+    try {
+        await carregarDadosDoServidor();
+    } catch (error) {
+        console.error('Erro ao carregar dados do servidor:', error);
+        if (main) {
+            main.innerHTML = renderEmptyState(
+                'Não foi possível conectar ao servidor',
+                'Verifique se o servidor está rodando e se o banco de dados (DATABASE_URL) está configurado, depois recarregue a página.'
+            );
+        }
+        return;
+    }
+
+    if (temDadosAntigosNoNavegador()) {
+        await oferecerMigracaoDadosAntigos();
+    }
+
     renderPage(getPageFromHash());
 });
+
+/** Oferece importar, uma única vez, dados de uma versão antiga do app (localStorage) para o banco */
+async function oferecerMigracaoDadosAntigos() {
+    const quer = confirm(
+        'Encontramos dados de uma versão antiga do PrazoJus salvos neste navegador ' +
+        '(processos, prazos, clientes...). Deseja importá-los para o banco de dados agora? ' +
+        'Isso não apaga nada que já esteja no banco.'
+    );
+    if (!quer) return;
+
+    try {
+        const resumo = await migrarDadosDoLocalStorage();
+        showToast(
+            `Dados antigos importados: ${resumo.clientes} cliente(s), ${resumo.processos} processo(s), ${resumo.prazos} prazo(s).`,
+            'success', 8000
+        );
+    } catch (error) {
+        console.error('Erro ao migrar dados antigos:', error);
+        showToast('Erro ao importar dados antigos deste navegador. Eles continuam salvos localmente — tente de novo mais tarde.', 'error');
+    }
+}
 
 // ============================================================
 // Sessão do usuário logado
@@ -334,22 +375,28 @@ function renderDeadlineList(prazos) {
     }).join('');
 }
 
-function handleDashboardCumprido(prazoId) {
-    marcarPrazoCumprido(prazoId);
+async function handleDashboardCumprido(prazoId) {
+    await marcarPrazoCumprido(prazoId);
     renderPage(appState.currentPage);
     showToast('Prazo marcado como cumprido!', 'success', 6000, {
         label: 'Desfazer',
-        onClick: () => {
-            marcarPrazoPendente(prazoId);
+        onClick: async () => {
+            await marcarPrazoPendente(prazoId);
             renderPage(appState.currentPage);
             showToast('Prazo reaberto.', 'info');
         }
     });
 }
 
-function handleDeletePrazo(prazoId) {
+async function handleReabrirPrazo(prazoId) {
+    await marcarPrazoPendente(prazoId);
+    renderPage(appState.currentPage);
+    showToast('Prazo reaberto.', 'info');
+}
+
+async function handleDeletePrazo(prazoId) {
     if (confirm('Deseja excluir este prazo?')) {
-        deletePrazo(prazoId);
+        await deletePrazo(prazoId);
         renderPage(appState.currentPage);
         showToast('Prazo excluído.', 'info');
     }
@@ -581,10 +628,10 @@ function renderSearchResult(processo) {
     `;
 }
 
-function handleSalvarProcesso() {
+async function handleSalvarProcesso() {
     if (!appState.searchResult) return;
 
-    const processo = saveProcesso(appState.searchResult);
+    const processo = await saveProcesso(appState.searchResult);
     if (!processo) return;
 
     // Salva prazos sugeridos que estão marcados
@@ -593,11 +640,11 @@ function handleSalvarProcesso() {
         ? suggestDeadlinesFromMovements(appState.searchResult.movimentos)
         : [];
 
-    checks.forEach(check => {
+    for (const check of checks) {
         const index = parseInt(check.dataset.index);
         const sugestao = sugestoes[index];
         if (sugestao) {
-            savePrazo({
+            await savePrazo({
                 processoId: processo.id,
                 tipo: sugestao.tipo,
                 tipoDescricao: sugestao.descricao,
@@ -608,7 +655,7 @@ function handleSalvarProcesso() {
                 contagem: 'uteis'
             });
         }
-    });
+    }
 
     showToast(`Processo salvo com ${checks.length} prazo(s)!`, 'success');
     navigateTo('dashboard');
@@ -717,9 +764,9 @@ function renderProcessoDetails(processo, prazos) {
                     <div style="display: flex; gap: 0.25rem; margin-left: 0.5rem;" onclick="event.stopPropagation()">
                         ${prazo.status !== 'cumprido'
                             ? `<button class="btn btn-sm btn-success" onclick="handleDashboardCumprido('${prazo.id}')">✓</button>`
-                            : `<button class="btn btn-sm btn-secondary" onclick="marcarPrazoPendente('${prazo.id}'); renderProcessos();">↩</button>`
+                            : `<button class="btn btn-sm btn-secondary" onclick="handleReabrirPrazo('${prazo.id}')">↩</button>`
                         }
-                        <button class="btn btn-sm btn-danger" onclick="handleDeletePrazo('${prazo.id}'); renderProcessos();">✕</button>
+                        <button class="btn btn-sm btn-danger" onclick="handleDeletePrazo('${prazo.id}')">✕</button>
                     </div>
                 </div>
             `;
@@ -746,8 +793,8 @@ function renderProcessoDetails(processo, prazos) {
     `;
 }
 
-function handleAtribuirCliente(processoId, clienteId) {
-    updateProcesso(processoId, { clienteId });
+async function handleAtribuirCliente(processoId, clienteId) {
+    await updateProcesso(processoId, { clienteId });
     showToast(clienteId ? 'Cliente vinculado ao processo!' : 'Cliente removido do processo.', 'success');
     renderProcessos();
 }
@@ -771,9 +818,9 @@ async function handleAtualizarProcesso(processoId) {
     renderProcessos();
 }
 
-function handleDeleteProcesso(processoId) {
+async function handleDeleteProcesso(processoId) {
     if (confirm('Excluir este processo e todos os seus prazos?')) {
-        deleteProcesso(processoId);
+        await deleteProcesso(processoId);
         renderProcessos();
         showToast('Processo excluído.', 'info');
     }
@@ -907,15 +954,15 @@ function toggleApiKeyVisibility() {
     input.type = input.type === 'password' ? 'text' : 'password';
 }
 
-function handleSalvarApiKey() {
+async function handleSalvarApiKey() {
     const apiKey = document.getElementById('config-apikey').value.trim();
-    saveApiKey(apiKey);
+    await saveApiKey(apiKey);
     showToast('API Key salva com sucesso!', 'success');
 }
 
 async function handleTestarConexao() {
     const apiKey = document.getElementById('config-apikey').value.trim();
-    if (apiKey) saveApiKey(apiKey);
+    if (apiKey) await saveApiKey(apiKey);
     await testarConexaoAPI();
 }
 
@@ -1029,16 +1076,16 @@ async function handleImportFile(input) {
     input.value = '';
 }
 
-function handleClearData() {
+async function handleClearData() {
     if (confirm('ATENÇÃO: Isso apagará TODOS os dados (processos, prazos, configurações). Deseja continuar?')) {
         if (confirm('Tem certeza? Esta ação não pode ser desfeita.')) {
-            clearAllData();
+            await clearAllData();
             renderConfig();
         }
     }
 }
 
-function handleAddCustomHoliday() {
+async function handleAddCustomHoliday() {
     const date = document.getElementById('custom-holiday-date').value;
     const name = document.getElementById('custom-holiday-name').value.trim();
 
@@ -1047,13 +1094,13 @@ function handleAddCustomHoliday() {
         return;
     }
 
-    addCustomHoliday(date, name);
+    await addCustomHoliday(date, name);
     renderConfig();
     showToast('Feriado adicionado!', 'success');
 }
 
-function handleRemoveCustomHoliday(date) {
-    removeCustomHoliday(date);
+async function handleRemoveCustomHoliday(date) {
+    await removeCustomHoliday(date);
     renderConfig();
     showToast('Feriado removido.', 'info');
 }
@@ -1141,7 +1188,7 @@ function onTipoChange() {
     }
 }
 
-function handleSalvarPrazoModal() {
+async function handleSalvarPrazoModal() {
     const processoId = document.getElementById('modal-processo').value;
     const tipo = document.getElementById('modal-tipo').value;
     const dataInicio = document.getElementById('modal-data-inicio').value;
@@ -1168,7 +1215,7 @@ function handleSalvarPrazoModal() {
 
     const tipoInfo = typeof PRAZOS_PROCESSUAIS !== 'undefined' ? PRAZOS_PROCESSUAIS[tipo] : null;
 
-    savePrazo({
+    await savePrazo({
         processoId,
         tipo,
         tipoDescricao: tipoInfo ? tipoInfo.descricao : tipo,
@@ -1546,13 +1593,13 @@ async function salvarProcessoRapido(btn, numero, tribunal) {
     try {
         const dados = await buscarProcesso(numero, tribunal);
         if (dados) {
-            const processo = saveProcesso(dados);
+            const processo = await saveProcesso(dados);
             if (processo) {
                 // Sugere e salva prazos automaticamente
                 if (typeof suggestDeadlinesFromMovements === 'function') {
                     const sugestoes = suggestDeadlinesFromMovements(dados.movimentos);
-                    sugestoes.forEach(s => {
-                        savePrazo({
+                    for (const s of sugestoes) {
+                        await savePrazo({
                             processoId: processo.id,
                             tipo: s.tipo,
                             tipoDescricao: s.descricao,
@@ -1562,7 +1609,7 @@ async function salvarProcessoRapido(btn, numero, tribunal) {
                             diasPrazo: s.dias || 0,
                             contagem: 'uteis'
                         });
-                    });
+                    }
                 }
                 btn.outerHTML = '<span class="badge">Salvo ✓</span>';
                 showToast('Processo salvo!', 'success');
@@ -1733,11 +1780,11 @@ function renderAlertaMonitoramento(alerta) {
     `;
 }
 
-function salvarPrazoDetectado(processoId, prazoData) {
+async function salvarPrazoDetectado(processoId, prazoData) {
     // Parse do JSON encodado no onclick
     const p = typeof prazoData === 'string' ? JSON.parse(prazoData) : prazoData;
 
-    savePrazo({
+    await savePrazo({
         processoId: processoId,
         tipo: p.tipo,
         tipoDescricao: p.descricao,
@@ -2379,12 +2426,12 @@ function openSalvarCalculoModal() {
     openModal(html);
 }
 
-function handleSalvarCalculoComoPrazo() {
+async function handleSalvarCalculoComoPrazo() {
     const processoId = document.getElementById('calc-modal-processo').value;
     const descricao = document.getElementById('calc-modal-descricao').value.trim() || 'Prazo calculado';
     const calc = calculadoraState.lastResult;
 
-    savePrazo({
+    await savePrazo({
         processoId,
         tipo: 'outro',
         tipoDescricao: descricao,
@@ -2636,20 +2683,20 @@ function renderClienteDetails(cliente, processos, prazos) {
     `;
 }
 
-function handleVincularProcesso(clienteId) {
+async function handleVincularProcesso(clienteId) {
     const select = document.getElementById(`vincular-processo-${clienteId}`);
     const processoId = select.value;
     if (!processoId) {
         showToast('Selecione um processo.', 'warning');
         return;
     }
-    updateProcesso(processoId, { clienteId });
+    await updateProcesso(processoId, { clienteId });
     showToast('Processo vinculado ao cliente!', 'success');
     renderClientes();
 }
 
-function handleDesvincularProcesso(processoId) {
-    updateProcesso(processoId, { clienteId: '' });
+async function handleDesvincularProcesso(processoId) {
+    await updateProcesso(processoId, { clienteId: '' });
     showToast('Processo desvinculado.', 'info');
     renderClientes();
 }
@@ -2749,7 +2796,7 @@ function openEditClienteModal(id) {
     openModal(html);
 }
 
-function handleSalvarCliente(id) {
+async function handleSalvarCliente(id) {
     const nome = document.getElementById('cliente-nome').value.trim();
     const cpfCnpj = document.getElementById('cliente-cpfcnpj').value.trim();
     const telefone = document.getElementById('cliente-telefone').value.trim();
@@ -2765,10 +2812,10 @@ function handleSalvarCliente(id) {
     const dados = { nome, cpfCnpj, telefone, email, linkDrive, observacoes };
 
     if (id) {
-        updateCliente(id, dados);
+        await updateCliente(id, dados);
         showToast('Cliente atualizado!', 'success');
     } else {
-        saveCliente(dados);
+        await saveCliente(dados);
         showToast('Cliente cadastrado!', 'success');
     }
 
@@ -2776,9 +2823,9 @@ function handleSalvarCliente(id) {
     renderClientes();
 }
 
-function handleDeleteCliente(id) {
+async function handleDeleteCliente(id) {
     if (confirm('Excluir este cliente? Os processos vinculados não serão excluídos, apenas desvinculados.')) {
-        deleteCliente(id);
+        await deleteCliente(id);
         renderClientes();
         showToast('Cliente excluído.', 'info');
     }
@@ -2977,20 +3024,20 @@ function renderHonorariosTable(honorarios) {
     `;
 }
 
-function handleMarcarHonorarioPago(id) {
-    marcarHonorarioPago(id);
+async function handleMarcarHonorarioPago(id) {
+    await marcarHonorarioPago(id);
     renderFinanceiro();
     showToast('Honorário marcado como pago!', 'success');
 }
 
-function handleMarcarHonorarioPendente(id) {
-    marcarHonorarioPendente(id);
+async function handleMarcarHonorarioPendente(id) {
+    await marcarHonorarioPendente(id);
     renderFinanceiro();
 }
 
-function handleDeleteHonorario(id) {
+async function handleDeleteHonorario(id) {
     if (confirm('Excluir este honorário?')) {
-        deleteHonorario(id);
+        await deleteHonorario(id);
         renderFinanceiro();
         showToast('Honorário excluído.', 'info');
     }
@@ -3053,7 +3100,7 @@ function openAddHonorarioModal() {
     openModal(html);
 }
 
-function handleSalvarHonorario() {
+async function handleSalvarHonorario() {
     const descricao = document.getElementById('hon-descricao').value.trim();
     const clienteId = document.getElementById('hon-cliente').value;
     const processoId = document.getElementById('hon-processo').value;
@@ -3067,7 +3114,7 @@ function handleSalvarHonorario() {
         return;
     }
 
-    saveHonorario({ descricao, clienteId, processoId, tipo, valor, vencimento, observacoes });
+    await saveHonorario({ descricao, clienteId, processoId, tipo, valor, vencimento, observacoes });
 
     closeModal();
     renderFinanceiro();

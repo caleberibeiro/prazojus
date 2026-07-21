@@ -289,7 +289,7 @@ async function atualizarMovimentacoes(processoId) {
         const dadosAtualizados = await buscarProcesso(processo.numero, processo.tribunalAlias);
 
         if (dadosAtualizados) {
-            const atualizado = updateProcesso(processoId, {
+            const atualizado = await updateProcesso(processoId, {
                 movimentos: dadosAtualizados.movimentos,
                 partes: dadosAtualizados.partes || processo.partes
             });
@@ -495,7 +495,7 @@ async function monitorarTodosProcessos(onProgress = null) {
 
             if (novasMovimentacoes.length > 0) {
                 // Atualiza o processo no storage
-                updateProcesso(processo.id, {
+                await updateProcesso(processo.id, {
                     movimentos: dadosAtuais.movimentos
                 });
 
@@ -938,7 +938,7 @@ async function monitorarPublicacoesDJEN(onProgress = null) {
                 }
 
                 // Atualiza data da última verificação
-                updateProcesso(processo.id, {
+                await updateProcesso(processo.id, {
                     ultimaVerificacaoDJEN: new Date().toISOString().split('T')[0]
                 });
             }

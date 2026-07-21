@@ -19,11 +19,19 @@ const cors = require('cors');
 const path = require('path');
 const crypto = require('crypto');
 const auth = require('./auth');
+const db = require('./db');
+const dataRoutes = require('./dataRoutes');
 
 // ── Configuração ────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
 const DATAJUD_BASE_URL = 'https://api-publica.datajud.cnj.jus.br';
 const TIMEOUT_MS = 30_000; // 30 segundos de timeout para requisições
+
+// Alguns provedores (DataJud, DJEN) filtram/bloqueiam requisições sem um
+// User-Agent de navegador, servindo uma página HTML de bloqueio em vez do
+// JSON esperado — isso é mais comum vindo de IPs de datacenter (ex: Render)
+// do que de conexões residenciais, por isso o problema não aparece local.
+const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 // Segredo de sessão gerado a cada início do servidor. Como o armazenamento
 // de sessões é em memória (reinicia junto com o servidor), não há motivo
@@ -69,11 +77,16 @@ app.use(session({
 }));
 
 // ── Autenticação — usuário atual em req.usuario, se logado ──
-app.use((req, _res, next) => {
-  if (req.session?.userId) {
-    req.usuario = auth.findUserById(req.session.userId) || null;
+app.use(async (req, res, next) => {
+  try {
+    if (req.session?.userId) {
+      req.usuario = await auth.findUserById(req.session.userId);
+    }
+    next();
+  } catch (erro) {
+    console.error('[ERRO] Falha ao carregar usuário da sessão:', erro.message);
+    next();
   }
-  next();
 });
 
 // Login desativado: para reativar, troque para true (o restante do sistema
@@ -100,36 +113,41 @@ app.use('/css', express.static(path.join(__dirname, 'css')));
 app.use('/js/login.js', express.static(path.join(__dirname, 'js', 'login.js')));
 
 // ── Endpoints de Autenticação ────────────────────────────────
-app.post('/api/auth/login', (req, res) => {
-  const { username, password } = req.body || {};
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { username, password } = req.body || {};
 
-  if (!username || !password) {
-    return res.status(400).json({ erro: true, mensagem: 'Informe usuário e senha.' });
-  }
-
-  const bloqueio = auth.verificarBloqueio(username);
-  if (bloqueio.bloqueado) {
-    return res.status(429).json({
-      erro: true,
-      mensagem: `Muitas tentativas com este usuário. Tente novamente em ${Math.ceil(bloqueio.segundosRestantes / 60)} minuto(s).`,
-    });
-  }
-
-  const usuario = auth.findUserByUsername(username);
-  if (!usuario || !auth.verifyPassword(password, usuario.passwordHash)) {
-    auth.registrarTentativaFalha(username);
-    return res.status(401).json({ erro: true, mensagem: 'Usuário ou senha inválidos.' });
-  }
-
-  auth.limparTentativas(username);
-  req.session.regenerate((err) => {
-    if (err) {
-      console.error('[ERRO] Falha ao criar sessão:', err.message);
-      return res.status(500).json({ erro: true, mensagem: 'Erro ao criar sessão.' });
+    if (!username || !password) {
+      return res.status(400).json({ erro: true, mensagem: 'Informe usuário e senha.' });
     }
-    req.session.userId = usuario.id;
-    res.json({ id: usuario.id, username: usuario.username, nome: usuario.nome });
-  });
+
+    const bloqueio = auth.verificarBloqueio(username);
+    if (bloqueio.bloqueado) {
+      return res.status(429).json({
+        erro: true,
+        mensagem: `Muitas tentativas com este usuário. Tente novamente em ${Math.ceil(bloqueio.segundosRestantes / 60)} minuto(s).`,
+      });
+    }
+
+    const usuario = await auth.findUserByUsername(username);
+    if (!usuario || !auth.verifyPassword(password, usuario.passwordHash)) {
+      auth.registrarTentativaFalha(username);
+      return res.status(401).json({ erro: true, mensagem: 'Usuário ou senha inválidos.' });
+    }
+
+    auth.limparTentativas(username);
+    req.session.regenerate((err) => {
+      if (err) {
+        console.error('[ERRO] Falha ao criar sessão:', err.message);
+        return res.status(500).json({ erro: true, mensagem: 'Erro ao criar sessão.' });
+      }
+      req.session.userId = usuario.id;
+      res.json({ id: usuario.id, username: usuario.username, nome: usuario.nome });
+    });
+  } catch (erro) {
+    console.error('[ERRO] Falha no login:', erro.message);
+    res.status(500).json({ erro: true, mensagem: 'Erro ao processar login.' });
+  }
 });
 
 app.post('/api/auth/logout', (req, res) => {
@@ -146,30 +164,38 @@ app.get('/api/auth/me', (req, res) => {
   res.json({ id: req.usuario.id, username: req.usuario.username, nome: req.usuario.nome });
 });
 
-app.get('/api/auth/users', requireAuth, (req, res) => {
-  res.json(auth.listPublicUsers());
+app.get('/api/auth/users', requireAuth, async (req, res) => {
+  try {
+    res.json(await auth.listPublicUsers());
+  } catch (erro) {
+    console.error('[ERRO] Falha ao listar usuários:', erro.message);
+    res.status(500).json({ erro: true, mensagem: 'Erro ao listar usuários.' });
+  }
 });
 
-app.post('/api/auth/users', requireAuth, (req, res) => {
+app.post('/api/auth/users', requireAuth, async (req, res) => {
   try {
-    const novoUsuario = auth.createUser(req.body || {});
+    const novoUsuario = await auth.createUser(req.body || {});
     res.status(201).json({ id: novoUsuario.id, username: novoUsuario.username, nome: novoUsuario.nome, criadoEm: novoUsuario.criadoEm });
   } catch (erro) {
     res.status(400).json({ erro: true, mensagem: erro.message });
   }
 });
 
-app.delete('/api/auth/users/:id', requireAuth, (req, res) => {
+app.delete('/api/auth/users/:id', requireAuth, async (req, res) => {
   if (req.params.id === req.usuario.id) {
     return res.status(400).json({ erro: true, mensagem: 'Você não pode remover sua própria conta enquanto estiver logado nela.' });
   }
   try {
-    auth.deleteUser(req.params.id);
+    await auth.deleteUser(req.params.id);
     res.json({ ok: true });
   } catch (erro) {
     res.status(400).json({ erro: true, mensagem: erro.message });
   }
 });
+
+// ── API de Dados (clientes, processos, prazos, honorários, config, feriados) ──
+app.use('/api/data', requireAuth, dataRoutes);
 
 // ── Arquivos Estáticos (protegidos por login) ────────────────
 // Serve index.html, css/, js/ e demais assets do diretório raiz
@@ -234,6 +260,8 @@ app.post('/api/datajud/:tribunal', requireAuth, async (req, res) => {
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `APIKey ${apiKey}`,
+        'Accept': 'application/json',
+        'User-Agent': USER_AGENT,
       },
       body: JSON.stringify(req.body),
       signal: controller.signal,
@@ -251,6 +279,7 @@ app.post('/api/datajud/:tribunal', requireAuth, async (req, res) => {
     try {
       dados = JSON.parse(textoResposta);
     } catch {
+      console.error(`[ERRO] DataJud respondeu status ${respostaDataJud.status} com corpo não-JSON: ${textoResposta.substring(0, 300)}`);
       dados = {
         erro: true,
         mensagem: 'A API do DataJud retornou uma resposta inesperada.',
@@ -322,7 +351,7 @@ app.get('/api/djen/comunicacao', requireAuth, async (req, res) => {
 
     const respostaDJEN = await fetch(urlDestino, {
       method: 'GET',
-      headers: { 'Accept': 'application/json' },
+      headers: { 'Accept': 'application/json', 'User-Agent': USER_AGENT },
       signal: controller.signal,
     });
 
@@ -342,6 +371,7 @@ app.get('/api/djen/comunicacao', requireAuth, async (req, res) => {
     try {
       dados = JSON.parse(textoResposta);
     } catch {
+      console.error(`[ERRO] DJEN (comunicacao) respondeu status ${respostaDJEN.status} com corpo não-JSON: ${textoResposta.substring(0, 300)}`);
       dados = {
         erro: true,
         mensagem: 'A API do DJEN retornou uma resposta inesperada.',
@@ -388,7 +418,7 @@ app.get('/api/djen/tribunais', requireAuth, async (req, res) => {
 
     const resposta = await fetch(urlDestino, {
       method: 'GET',
-      headers: { 'Accept': 'application/json' },
+      headers: { 'Accept': 'application/json', 'User-Agent': USER_AGENT },
       signal: controller.signal,
     });
 
@@ -398,6 +428,7 @@ app.get('/api/djen/tribunais', requireAuth, async (req, res) => {
     try {
       dados = JSON.parse(textoResposta);
     } catch {
+      console.error(`[ERRO] DJEN (tribunais) respondeu status ${resposta.status} com corpo não-JSON: ${textoResposta.substring(0, 300)}`);
       dados = { erro: true, mensagem: 'A API do DJEN retornou uma resposta inesperada.', detalhes: textoResposta.substring(0, 500) };
     }
     return res.status(resposta.status).json(dados);
@@ -422,7 +453,7 @@ app.get('/api/djen/caderno/:sigla/:data/:meio', requireAuth, async (req, res) =>
 
     const resposta = await fetch(urlDestino, {
       method: 'GET',
-      headers: { 'Accept': 'application/json' },
+      headers: { 'Accept': 'application/json', 'User-Agent': USER_AGENT },
       signal: controller.signal,
     });
 
@@ -432,6 +463,7 @@ app.get('/api/djen/caderno/:sigla/:data/:meio', requireAuth, async (req, res) =>
     try {
       dados = JSON.parse(textoResposta);
     } catch {
+      console.error(`[ERRO] DJEN (caderno) respondeu status ${resposta.status} com corpo não-JSON: ${textoResposta.substring(0, 300)}`);
       dados = { erro: true, mensagem: 'A API do DJEN retornou uma resposta inesperada.', detalhes: textoResposta.substring(0, 500) };
     }
     return res.status(resposta.status).json(dados);
@@ -449,33 +481,46 @@ app.get('*', requireAuth, (_req, res) => {
 });
 
 // ── Inicialização do Servidor ───────────────────────────────
-const credenciaisSemeadas = auth.ensureSeedAdmin();
+// As migrações e o seed do admin dependem do banco, então o
+// servidor só começa a aceitar conexões depois que isso terminar.
+(async () => {
+  try {
+    console.log('Conectando ao PostgreSQL e aplicando migrações...');
+    await db.runMigrations();
 
-app.listen(PORT, () => {
-  console.log('');
-  console.log('╔══════════════════════════════════════════════════════╗');
-  console.log('║                                                      ║');
-  console.log('║        ⚖️  PrazoJus — Gestão de Prazos Judiciais     ║');
-  console.log('║                                                      ║');
-  console.log('╠══════════════════════════════════════════════════════╣');
-  console.log('║                                                      ║');
-  console.log(`║   🌐 Servidor rodando em: http://localhost:${PORT}      ║`);
-  console.log('║   📡 Proxy DataJud:       /api/datajud/:tribunal     ║');
-  console.log('║   📡 Proxy DJEN:          /api/djen/comunicacao       ║');
-  console.log('║                                                      ║');
-  console.log('╚══════════════════════════════════════════════════════╝');
-  console.log('');
+    const credenciaisSemeadas = await auth.ensureSeedAdmin();
 
-  if (credenciaisSemeadas) {
-    console.log('╔══════════════════════════════════════════════════════╗');
-    console.log('║   🔑 Primeira execução — conta admin criada:         ║');
-    console.log(`║      Usuário: ${credenciaisSemeadas.username.padEnd(38)}║`);
-    console.log(`║      Senha:   ${credenciaisSemeadas.password.padEnd(38)}║`);
-    console.log('║   Guarde essa senha agora — ela não será mostrada    ║');
-    console.log('║   de novo. Depois de entrar, crie uma conta sua em   ║');
-    console.log('║   Configurações > Equipe (e pode remover esta, se    ║');
-    console.log('║   quiser, contanto que sobre pelo menos uma conta).  ║');
-    console.log('╚══════════════════════════════════════════════════════╝');
-    console.log('');
+    app.listen(PORT, () => {
+      console.log('');
+      console.log('╔══════════════════════════════════════════════════════╗');
+      console.log('║                                                      ║');
+      console.log('║        ⚖️  PrazoJus — Gestão de Prazos Judiciais     ║');
+      console.log('║                                                      ║');
+      console.log('╠══════════════════════════════════════════════════════╣');
+      console.log('║                                                      ║');
+      console.log(`║   🌐 Servidor rodando em: http://localhost:${PORT}      ║`);
+      console.log('║   📡 Proxy DataJud:       /api/datajud/:tribunal     ║');
+      console.log('║   📡 Proxy DJEN:          /api/djen/comunicacao       ║');
+      console.log('║   🗄️  Dados:               PostgreSQL (/api/data)     ║');
+      console.log('║                                                      ║');
+      console.log('╚══════════════════════════════════════════════════════╝');
+      console.log('');
+
+      if (credenciaisSemeadas) {
+        console.log('╔══════════════════════════════════════════════════════╗');
+        console.log('║   🔑 Primeira execução — conta admin criada:         ║');
+        console.log(`║      Usuário: ${credenciaisSemeadas.username.padEnd(38)}║`);
+        console.log(`║      Senha:   ${credenciaisSemeadas.password.padEnd(38)}║`);
+        console.log('║   Guarde essa senha agora — ela não será mostrada    ║');
+        console.log('║   de novo. Depois de entrar, crie uma conta sua em   ║');
+        console.log('║   Configurações > Equipe (e pode remover esta, se    ║');
+        console.log('║   quiser, contanto que sobre pelo menos uma conta).  ║');
+        console.log('╚══════════════════════════════════════════════════════╝');
+        console.log('');
+      }
+    });
+  } catch (erro) {
+    console.error('[ERRO FATAL] Não foi possível iniciar o servidor:', erro.message);
+    process.exit(1);
   }
-});
+})();

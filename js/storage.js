@@ -1,16 +1,17 @@
 // ============================================================
-// PrazoJus - Módulo de Persistência (localStorage)
-// Gerencia o armazenamento local de processos, prazos e config
+// PrazoJus - Módulo de Persistência (PostgreSQL via API REST)
 // ============================================================
-
-const STORAGE_KEYS = {
-    PROCESSOS: 'prazojus_processos',
-    PRAZOS: 'prazojus_prazos',
-    CONFIG: 'prazojus_config',
-    FERIADOS_CUSTOM: 'prazojus_feriados_custom',
-    CLIENTES: 'prazojus_clientes',
-    HONORARIOS: 'prazojus_honorarios'
-};
+// Os dados agora vivem no servidor (compartilhados pela equipe),
+// não mais no localStorage do navegador. Para manter o resto do
+// app simples, este módulo guarda um CACHE em memória alimentado
+// pelo servidor:
+//   - Leituras (getProcessos, getClienteById, ...) continuam
+//     SÍNCRONAS, lendo do cache.
+//   - Escritas (saveProcesso, updateCliente, ...) são
+//     ASSÍNCRONAS: batem na API, e só then atualizam o cache.
+// Chame carregarDadosDoServidor() (e aguarde) antes de renderizar
+// qualquer página.
+// ============================================================
 
 // ============================================================
 // Configuração padrão
@@ -24,28 +25,55 @@ const DEFAULT_CONFIG = {
 };
 
 // ============================================================
-// Funções auxiliares de acesso ao localStorage
+// Cache em memória + carga inicial
 // ============================================================
+let appData = {
+    processos: [],
+    prazos: [],
+    clientes: [],
+    honorarios: [],
+    config: { ...DEFAULT_CONFIG },
+    feriadosCustom: []
+};
 
-function storageGet(key) {
-    try {
-        const data = localStorage.getItem(key);
-        return data ? JSON.parse(data) : null;
-    } catch (e) {
-        console.error(`Erro ao ler ${key} do localStorage:`, e);
-        return null;
+let appDataCarregado = false;
+
+/** Busca todos os dados do servidor e popula o cache em memória */
+async function carregarDadosDoServidor() {
+    const resposta = await fetch('/api/data/tudo');
+    if (!resposta.ok) {
+        throw new Error('Não foi possível carregar os dados do servidor.');
     }
+    const dados = await resposta.json();
+
+    appData.clientes = dados.clientes || [];
+    appData.processos = dados.processos || [];
+    appData.prazos = dados.prazos || [];
+    appData.honorarios = dados.honorarios || [];
+    appData.feriadosCustom = dados.feriadosCustom || [];
+    appData.config = { ...DEFAULT_CONFIG, ...(dados.config || {}) };
+
+    appDataCarregado = true;
 }
 
-function storageSet(key, value) {
-    try {
-        localStorage.setItem(key, JSON.stringify(value));
-        return true;
-    } catch (e) {
-        console.error(`Erro ao salvar ${key} no localStorage:`, e);
-        showToast('Erro ao salvar dados. Verifique o espaço de armazenamento.', 'error');
-        return false;
+/** Helper de requisição à API de dados — trata erro e mostra toast automaticamente */
+async function apiRequest(method, url, body) {
+    const options = { method };
+    if (body !== undefined) {
+        options.headers = { 'Content-Type': 'application/json' };
+        options.body = JSON.stringify(body);
     }
+
+    const resposta = await fetch(url, options);
+    const dados = await resposta.json().catch(() => ({}));
+
+    if (!resposta.ok) {
+        const msg = dados.mensagem || `Erro ${resposta.status} ao acessar ${url}`;
+        showToast(msg, 'error');
+        throw new Error(msg);
+    }
+
+    return { dados, status: resposta.status };
 }
 
 // ============================================================
@@ -54,90 +82,51 @@ function storageSet(key, value) {
 
 /** Retorna todos os processos salvos */
 function getProcessos() {
-    return storageGet(STORAGE_KEYS.PROCESSOS) || [];
+    return [...appData.processos];
 }
 
 /** Retorna um processo pelo ID */
 function getProcessoById(id) {
-    const processos = getProcessos();
-    return processos.find(p => p.id === id) || null;
+    return appData.processos.find(p => p.id === id) || null;
 }
 
 /** Retorna um processo pelo número CNJ */
 function getProcessoByNumero(numero) {
-    const processos = getProcessos();
     const clean = numero.replace(/[^0-9]/g, '');
-    return processos.find(p => p.numero.replace(/[^0-9]/g, '') === clean) || null;
+    return appData.processos.find(p => p.numero.replace(/[^0-9]/g, '') === clean) || null;
 }
 
-/** Salva um novo processo */
-function saveProcesso(processo) {
-    const processos = getProcessos();
+/** Salva um novo processo (ou retorna o existente, se o número já estiver cadastrado) */
+async function saveProcesso(processo) {
+    const { dados, status } = await apiRequest('POST', '/api/data/processos', processo);
 
-    // Verifica duplicata por número
-    const existing = processos.find(p =>
-        p.numero.replace(/[^0-9]/g, '') === processo.numero.replace(/[^0-9]/g, '')
-    );
-    if (existing) {
-        showToast('Processo já cadastrado!', 'warning');
-        return existing;
+    const index = appData.processos.findIndex(p => p.id === dados.id);
+    if (index === -1) {
+        appData.processos.push(dados);
+    } else {
+        appData.processos[index] = dados;
     }
 
-    const novoProcesso = {
-        id: generateId(),
-        numero: processo.numero,
-        tribunal: processo.tribunal || '',
-        tribunalAlias: processo.tribunalAlias || '',
-        classe: processo.classe || '',
-        classeNome: processo.classeNome || '',
-        assuntos: processo.assuntos || [],
-        orgaoJulgador: processo.orgaoJulgador || '',
-        orgaoJulgadorNome: processo.orgaoJulgadorNome || '',
-        clienteId: processo.clienteId || '',
-        partes: processo.partes || [],
-        movimentos: processo.movimentos || [],
-        status: processo.status || 'ativo',
-        observacoes: processo.observacoes || '',
-        criadoEm: new Date().toISOString(),
-        atualizadoEm: new Date().toISOString()
-    };
+    if (status === 200) {
+        showToast('Processo já cadastrado!', 'warning');
+    }
 
-    processos.push(novoProcesso);
-    storageSet(STORAGE_KEYS.PROCESSOS, processos);
-    return novoProcesso;
+    return dados;
 }
 
 /** Atualiza um processo existente */
-function updateProcesso(id, updates) {
-    const processos = getProcessos();
-    const index = processos.findIndex(p => p.id === id);
-
-    if (index === -1) {
-        showToast('Processo não encontrado.', 'error');
-        return null;
-    }
-
-    processos[index] = {
-        ...processos[index],
-        ...updates,
-        atualizadoEm: new Date().toISOString()
-    };
-
-    storageSet(STORAGE_KEYS.PROCESSOS, processos);
-    return processos[index];
+async function updateProcesso(id, updates) {
+    const { dados } = await apiRequest('PUT', `/api/data/processos/${id}`, updates);
+    const index = appData.processos.findIndex(p => p.id === id);
+    if (index !== -1) appData.processos[index] = dados;
+    return dados;
 }
 
-/** Remove um processo e seus prazos vinculados */
-function deleteProcesso(id) {
-    let processos = getProcessos();
-    processos = processos.filter(p => p.id !== id);
-    storageSet(STORAGE_KEYS.PROCESSOS, processos);
-
-    // Remove prazos vinculados
-    let prazos = getPrazos();
-    prazos = prazos.filter(p => p.processoId !== id);
-    storageSet(STORAGE_KEYS.PRAZOS, prazos);
-
+/** Remove um processo (o servidor cuida do cascade dos prazos vinculados) */
+async function deleteProcesso(id) {
+    await apiRequest('DELETE', `/api/data/processos/${id}`);
+    appData.processos = appData.processos.filter(p => p.id !== id);
+    appData.prazos = appData.prazos.filter(p => p.processoId !== id);
     return true;
 }
 
@@ -147,84 +136,53 @@ function deleteProcesso(id) {
 
 /** Retorna todos os prazos salvos */
 function getPrazos() {
-    return storageGet(STORAGE_KEYS.PRAZOS) || [];
+    return [...appData.prazos];
 }
 
 /** Retorna um prazo pelo ID */
 function getPrazoById(id) {
-    const prazos = getPrazos();
-    return prazos.find(p => p.id === id) || null;
+    return appData.prazos.find(p => p.id === id) || null;
 }
 
 /** Retorna prazos de um processo específico */
 function getPrazosByProcesso(processoId) {
-    const prazos = getPrazos();
-    return prazos.filter(p => p.processoId === processoId);
+    return appData.prazos.filter(p => p.processoId === processoId);
 }
 
 /** Salva um novo prazo */
-function savePrazo(prazo) {
-    const prazos = getPrazos();
-
-    const novoPrazo = {
-        id: generateId(),
-        processoId: prazo.processoId,
-        tipo: prazo.tipo || 'outro',
-        tipoDescricao: prazo.tipoDescricao || '',
-        baseLegal: prazo.baseLegal || '',
-        dataInicio: prazo.dataInicio, // ISO string
-        dataFim: prazo.dataFim,       // ISO string
-        diasPrazo: prazo.diasPrazo || 0,
-        contagem: prazo.contagem || 'uteis', // 'uteis', 'corridos', 'data_fixa'
-        status: prazo.status || 'pendente', // 'pendente', 'cumprido', 'perdido'
-        observacoes: prazo.observacoes || '',
-        criadoEm: new Date().toISOString()
-    };
-
-    prazos.push(novoPrazo);
-    storageSet(STORAGE_KEYS.PRAZOS, prazos);
-    return novoPrazo;
+async function savePrazo(prazo) {
+    const { dados } = await apiRequest('POST', '/api/data/prazos', prazo);
+    appData.prazos.push(dados);
+    return dados;
 }
 
 /** Atualiza um prazo existente */
-function updatePrazo(id, updates) {
-    const prazos = getPrazos();
-    const index = prazos.findIndex(p => p.id === id);
-
-    if (index === -1) {
-        showToast('Prazo não encontrado.', 'error');
-        return null;
-    }
-
-    prazos[index] = {
-        ...prazos[index],
-        ...updates
-    };
-
-    storageSet(STORAGE_KEYS.PRAZOS, prazos);
-    return prazos[index];
+async function updatePrazo(id, updates) {
+    const { dados } = await apiRequest('PUT', `/api/data/prazos/${id}`, updates);
+    const index = appData.prazos.findIndex(p => p.id === id);
+    if (index !== -1) appData.prazos[index] = dados;
+    return dados;
 }
 
 /** Remove um prazo */
-function deletePrazo(id) {
-    let prazos = getPrazos();
-    prazos = prazos.filter(p => p.id !== id);
-    storageSet(STORAGE_KEYS.PRAZOS, prazos);
+async function deletePrazo(id) {
+    await apiRequest('DELETE', `/api/data/prazos/${id}`);
+    appData.prazos = appData.prazos.filter(p => p.id !== id);
     return true;
 }
 
 /** Marca prazo como cumprido */
-function marcarPrazoCumprido(id) {
+async function marcarPrazoCumprido(id) {
     return updatePrazo(id, { status: 'cumprido' });
 }
 
 /** Marca prazo como pendente */
-function marcarPrazoPendente(id) {
+async function marcarPrazoPendente(id) {
     return updatePrazo(id, { status: 'pendente' });
 }
 
 // ============================================================
-// CONSULTAS E ESTATÍSTICAS
+// CONSULTAS E ESTATÍSTICAS (síncronas — leem o cache)
 // ============================================================
 
 /** Retorna prazos ordenados por urgência (mais urgente primeiro) */
@@ -289,8 +247,7 @@ function getDashboardStats() {
 
 /** Retorna prazos de um mês específico para o calendário */
 function getPrazosByMonth(year, month) {
-    const prazos = getPrazos();
-    return prazos.filter(prazo => {
+    return getPrazos().filter(prazo => {
         const date = new Date(prazo.dataFim);
         return date.getFullYear() === year && date.getMonth() === month;
     });
@@ -298,8 +255,7 @@ function getPrazosByMonth(year, month) {
 
 /** Retorna prazos de um dia específico */
 function getPrazosByDate(dateStr) {
-    const prazos = getPrazos();
-    return prazos.filter(prazo => {
+    return getPrazos().filter(prazo => {
         const date = new Date(prazo.dataFim);
         const target = new Date(dateStr);
         return date.toDateString() === target.toDateString();
@@ -312,25 +268,23 @@ function getPrazosByDate(dateStr) {
 
 /** Retorna a configuração atual */
 function getConfig() {
-    return storageGet(STORAGE_KEYS.CONFIG) || { ...DEFAULT_CONFIG };
+    return { ...appData.config };
 }
 
-/** Salva configuração */
-function saveConfig(config) {
-    const current = getConfig();
-    const updated = { ...current, ...config };
-    storageSet(STORAGE_KEYS.CONFIG, updated);
-    return updated;
+/** Salva configuração (merge parcial) */
+async function saveConfig(config) {
+    const { dados } = await apiRequest('PUT', '/api/data/config', config);
+    appData.config = { ...DEFAULT_CONFIG, ...dados };
+    return { ...appData.config };
 }
 
 /** Retorna a API Key configurada */
 function getApiKey() {
-    const config = getConfig();
-    return config.apiKey || '';
+    return appData.config.apiKey || '';
 }
 
 /** Salva a API Key */
-function saveApiKey(apiKey) {
+async function saveApiKey(apiKey) {
     return saveConfig({ apiKey });
 }
 
@@ -340,28 +294,21 @@ function saveApiKey(apiKey) {
 
 /** Retorna feriados customizados */
 function getCustomHolidays() {
-    return storageGet(STORAGE_KEYS.FERIADOS_CUSTOM) || [];
-}
-
-/** Salva feriados customizados */
-function saveCustomHolidays(holidays) {
-    storageSet(STORAGE_KEYS.FERIADOS_CUSTOM, holidays);
+    return [...appData.feriadosCustom];
 }
 
 /** Adiciona um feriado customizado */
-function addCustomHoliday(date, name) {
-    const holidays = getCustomHolidays();
-    holidays.push({ date, name });
-    saveCustomHolidays(holidays);
-    return holidays;
+async function addCustomHoliday(date, name) {
+    const { dados } = await apiRequest('POST', '/api/data/feriados', { date, name });
+    appData.feriadosCustom = dados;
+    return appData.feriadosCustom;
 }
 
 /** Remove um feriado customizado */
-function removeCustomHoliday(date) {
-    let holidays = getCustomHolidays();
-    holidays = holidays.filter(h => h.date !== date);
-    saveCustomHolidays(holidays);
-    return holidays;
+async function removeCustomHoliday(date) {
+    await apiRequest('DELETE', `/api/data/feriados/${encodeURIComponent(date)}`);
+    appData.feriadosCustom = appData.feriadosCustom.filter(h => h.date !== date);
+    return appData.feriadosCustom;
 }
 
 // ============================================================
@@ -370,63 +317,34 @@ function removeCustomHoliday(date) {
 
 /** Retorna todos os clientes salvos */
 function getClientes() {
-    return storageGet(STORAGE_KEYS.CLIENTES) || [];
+    return [...appData.clientes];
 }
 
 /** Retorna um cliente pelo ID */
 function getClienteById(id) {
-    return getClientes().find(c => c.id === id) || null;
+    return appData.clientes.find(c => c.id === id) || null;
 }
 
 /** Salva um novo cliente */
-function saveCliente(cliente) {
-    const clientes = getClientes();
-
-    const novoCliente = {
-        id: generateId(),
-        nome: cliente.nome || '',
-        cpfCnpj: cliente.cpfCnpj || '',
-        email: cliente.email || '',
-        telefone: cliente.telefone || '',
-        linkDrive: cliente.linkDrive || '',
-        observacoes: cliente.observacoes || '',
-        criadoEm: new Date().toISOString()
-    };
-
-    clientes.push(novoCliente);
-    storageSet(STORAGE_KEYS.CLIENTES, clientes);
-    return novoCliente;
+async function saveCliente(cliente) {
+    const { dados } = await apiRequest('POST', '/api/data/clientes', cliente);
+    appData.clientes.push(dados);
+    return dados;
 }
 
 /** Atualiza um cliente existente */
-function updateCliente(id, updates) {
-    const clientes = getClientes();
-    const index = clientes.findIndex(c => c.id === id);
-
-    if (index === -1) {
-        showToast('Cliente não encontrado.', 'error');
-        return null;
-    }
-
-    clientes[index] = { ...clientes[index], ...updates };
-    storageSet(STORAGE_KEYS.CLIENTES, clientes);
-    return clientes[index];
+async function updateCliente(id, updates) {
+    const { dados } = await apiRequest('PUT', `/api/data/clientes/${id}`, updates);
+    const index = appData.clientes.findIndex(c => c.id === id);
+    if (index !== -1) appData.clientes[index] = dados;
+    return dados;
 }
 
-/** Remove um cliente e desvincula seus processos */
-function deleteCliente(id) {
-    let clientes = getClientes();
-    clientes = clientes.filter(c => c.id !== id);
-    storageSet(STORAGE_KEYS.CLIENTES, clientes);
-
-    // Desvincula processos que apontavam para este cliente
-    const processos = getProcessos();
-    processos.forEach(p => {
-        if (p.clienteId === id) {
-            updateProcesso(p.id, { clienteId: '' });
-        }
-    });
-
+/** Remove um cliente (o servidor desvincula os processos dele) */
+async function deleteCliente(id) {
+    await apiRequest('DELETE', `/api/data/clientes/${id}`);
+    appData.clientes = appData.clientes.filter(c => c.id !== id);
+    appData.processos = appData.processos.map(p => p.clienteId === id ? { ...p, clienteId: '' } : p);
     return true;
 }
 
@@ -451,12 +369,12 @@ function getPrazosByCliente(clienteId, incluirCumpridos = false) {
 
 /** Retorna todos os honorários salvos */
 function getHonorarios() {
-    return storageGet(STORAGE_KEYS.HONORARIOS) || [];
+    return [...appData.honorarios];
 }
 
 /** Retorna um honorário pelo ID */
 function getHonorarioById(id) {
-    return getHonorarios().find(h => h.id === id) || null;
+    return appData.honorarios.find(h => h.id === id) || null;
 }
 
 /** Retorna honorários vinculados a um cliente */
@@ -465,57 +383,34 @@ function getHonorariosByCliente(clienteId) {
 }
 
 /** Salva um novo honorário */
-function saveHonorario(honorario) {
-    const honorarios = getHonorarios();
-
-    const novoHonorario = {
-        id: generateId(),
-        clienteId: honorario.clienteId || '',
-        processoId: honorario.processoId || '',
-        descricao: honorario.descricao || '',
-        tipo: honorario.tipo || 'contratual', // 'contratual', 'exito', 'hora'
-        valor: parseFloat(honorario.valor) || 0,
-        vencimento: honorario.vencimento || '', // ISO string (opcional)
-        status: honorario.status || 'pendente', // 'pendente', 'pago'
-        observacoes: honorario.observacoes || '',
-        criadoEm: new Date().toISOString()
-    };
-
-    honorarios.push(novoHonorario);
-    storageSet(STORAGE_KEYS.HONORARIOS, honorarios);
-    return novoHonorario;
+async function saveHonorario(honorario) {
+    const { dados } = await apiRequest('POST', '/api/data/honorarios', honorario);
+    appData.honorarios.push(dados);
+    return dados;
 }
 
 /** Atualiza um honorário existente */
-function updateHonorario(id, updates) {
-    const honorarios = getHonorarios();
-    const index = honorarios.findIndex(h => h.id === id);
-
-    if (index === -1) {
-        showToast('Honorário não encontrado.', 'error');
-        return null;
-    }
-
-    honorarios[index] = { ...honorarios[index], ...updates };
-    storageSet(STORAGE_KEYS.HONORARIOS, honorarios);
-    return honorarios[index];
+async function updateHonorario(id, updates) {
+    const { dados } = await apiRequest('PUT', `/api/data/honorarios/${id}`, updates);
+    const index = appData.honorarios.findIndex(h => h.id === id);
+    if (index !== -1) appData.honorarios[index] = dados;
+    return dados;
 }
 
 /** Remove um honorário */
-function deleteHonorario(id) {
-    let honorarios = getHonorarios();
-    honorarios = honorarios.filter(h => h.id !== id);
-    storageSet(STORAGE_KEYS.HONORARIOS, honorarios);
+async function deleteHonorario(id) {
+    await apiRequest('DELETE', `/api/data/honorarios/${id}`);
+    appData.honorarios = appData.honorarios.filter(h => h.id !== id);
     return true;
 }
 
 /** Marca honorário como pago */
-function marcarHonorarioPago(id) {
+async function marcarHonorarioPago(id) {
     return updateHonorario(id, { status: 'pago', pagoEm: new Date().toISOString() });
 }
 
 /** Marca honorário como pendente */
-function marcarHonorarioPendente(id) {
+async function marcarHonorarioPendente(id) {
     return updateHonorario(id, { status: 'pendente', pagoEm: '' });
 }
 
@@ -576,12 +471,12 @@ function exportData() {
     showToast('Backup exportado com sucesso!', 'success');
 }
 
-/** Importa dados de um arquivo JSON */
+/** Importa dados de um arquivo JSON (SUBSTITUI tudo que está no banco) */
 function importData(file) {
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
 
-        reader.onload = (e) => {
+        reader.onload = async (e) => {
             try {
                 const data = JSON.parse(e.target.result);
 
@@ -589,26 +484,33 @@ function importData(file) {
                     throw new Error('Arquivo de backup inválido');
                 }
 
-                storageSet(STORAGE_KEYS.PROCESSOS, data.processos);
-                storageSet(STORAGE_KEYS.PRAZOS, data.prazos);
+                await apiRequest('DELETE', '/api/data/tudo');
 
+                for (const cliente of data.clientes || []) {
+                    await apiRequest('POST', '/api/data/clientes', cliente);
+                }
+                for (const processo of data.processos || []) {
+                    await apiRequest('POST', '/api/data/processos', processo);
+                }
+                for (const prazo of data.prazos || []) {
+                    await apiRequest('POST', '/api/data/prazos', prazo);
+                }
+                for (const honorario of data.honorarios || []) {
+                    await apiRequest('POST', '/api/data/honorarios', honorario);
+                }
+                for (const feriado of data.feriadosCustom || []) {
+                    await apiRequest('POST', '/api/data/feriados', feriado);
+                }
                 if (data.config) {
-                    storageSet(STORAGE_KEYS.CONFIG, data.config);
+                    await apiRequest('PUT', '/api/data/config', data.config);
                 }
-                if (data.feriadosCustom) {
-                    storageSet(STORAGE_KEYS.FERIADOS_CUSTOM, data.feriadosCustom);
-                }
-                if (data.clientes) {
-                    storageSet(STORAGE_KEYS.CLIENTES, data.clientes);
-                }
-                if (data.honorarios) {
-                    storageSet(STORAGE_KEYS.HONORARIOS, data.honorarios);
-                }
+
+                await carregarDadosDoServidor();
 
                 showToast(`Backup importado! ${data.processos.length} processos e ${data.prazos.length} prazos restaurados.`, 'success');
                 resolve(data);
             } catch (err) {
-                showToast('Erro ao importar: arquivo inválido.', 'error');
+                showToast('Erro ao importar: ' + (err.message || 'arquivo inválido.'), 'error');
                 reject(err);
             }
         };
@@ -663,7 +565,7 @@ function importExcelData(file) {
 
         const reader = new FileReader();
 
-        reader.onload = (e) => {
+        reader.onload = async (e) => {
             try {
                 const workbook = XLSX.read(e.target.result, { type: 'array', cellDates: true });
 
@@ -681,11 +583,11 @@ function importExcelData(file) {
                 }
 
                 let clientesImportados = 0;
-                linhasClientes.forEach(linha => {
+                for (const linha of linhasClientes) {
                     const nome = String(linha['Nome'] || '').trim();
-                    if (!nome) return;
+                    if (!nome) continue;
 
-                    saveCliente({
+                    await saveCliente({
                         nome,
                         cpfCnpj: String(linha['CPF/CNPJ'] || '').trim(),
                         telefone: String(linha['Telefone'] || '').trim(),
@@ -694,19 +596,19 @@ function importExcelData(file) {
                         observacoes: String(linha['Observações'] || '').trim()
                     });
                     clientesImportados++;
-                });
+                }
 
                 let processosImportados = 0;
-                linhasProcessos.forEach(linha => {
+                for (const linha of linhasProcessos) {
                     const numero = String(linha['Número'] || '').trim();
-                    if (!numero) return;
+                    if (!numero) continue;
 
                     const nomeCliente = String(linha['Cliente'] || '').trim();
                     const cliente = nomeCliente
                         ? getClientes().find(c => c.nome.toLowerCase() === nomeCliente.toLowerCase())
                         : null;
 
-                    saveProcesso({
+                    await saveProcesso({
                         numero,
                         tribunal: String(linha['Tribunal'] || '').trim(),
                         classeNome: String(linha['Classe'] || '').trim(),
@@ -715,19 +617,19 @@ function importExcelData(file) {
                         observacoes: String(linha['Observações'] || '').trim()
                     });
                     processosImportados++;
-                });
+                }
 
                 let prazosImportados = 0;
-                linhasPrazos.forEach(linha => {
+                for (const linha of linhasPrazos) {
                     const descricao = String(linha['Descrição'] || '').trim();
                     const numeroProcesso = String(linha['Processo (Número)'] || '').trim();
                     const dataVencimento = parseDataPlanilha(linha['Data Vencimento']);
-                    if (!descricao || !numeroProcesso || !dataVencimento) return;
+                    if (!descricao || !numeroProcesso || !dataVencimento) continue;
 
                     const processo = getProcessoByNumero(numeroProcesso);
-                    if (!processo) return;
+                    if (!processo) continue;
 
-                    savePrazo({
+                    await savePrazo({
                         processoId: processo.id,
                         tipo: 'outro',
                         tipoDescricao: descricao,
@@ -738,7 +640,7 @@ function importExcelData(file) {
                         observacoes: String(linha['Observações'] || '').trim()
                     });
                     prazosImportados++;
-                });
+                }
 
                 const resumo = `${clientesImportados} cliente(s), ${processosImportados} processo(s) e ${prazosImportados} prazo(s) importados da planilha.`;
                 showToast(resumo, 'success');
@@ -783,10 +685,75 @@ function baixarModeloPlanilhaImportacao() {
     showToast('Modelo de planilha baixado!', 'success');
 }
 
-/** Limpa todos os dados (com confirmação) */
-function clearAllData() {
-    Object.values(STORAGE_KEYS).forEach(key => {
-        localStorage.removeItem(key);
-    });
+/** Apaga todos os dados no banco (com confirmação) */
+async function clearAllData() {
+    await apiRequest('DELETE', '/api/data/tudo');
+    appData = {
+        processos: [],
+        prazos: [],
+        clientes: [],
+        honorarios: [],
+        config: { ...DEFAULT_CONFIG },
+        feriadosCustom: []
+    };
     showToast('Todos os dados foram apagados.', 'warning');
+}
+
+// ============================================================
+// MIGRAÇÃO ÚNICA — dados antigos que ainda estejam no localStorage
+// ============================================================
+// Versões anteriores do PrazoJus guardavam tudo no localStorage do
+// navegador. Estas funções detectam e importam esses dados pro
+// banco, uma única vez, sem apagar o que já foi cadastrado depois
+// da migração para o servidor.
+// ============================================================
+
+const LEGACY_STORAGE_KEYS = {
+    PROCESSOS: 'prazojus_processos',
+    PRAZOS: 'prazojus_prazos',
+    CONFIG: 'prazojus_config',
+    FERIADOS_CUSTOM: 'prazojus_feriados_custom',
+    CLIENTES: 'prazojus_clientes',
+    HONORARIOS: 'prazojus_honorarios'
+};
+
+function temDadosAntigosNoNavegador() {
+    return Object.values(LEGACY_STORAGE_KEYS).some(key => !!localStorage.getItem(key));
+}
+
+async function migrarDadosDoLocalStorage() {
+    const lerLegado = (key) => {
+        try {
+            const raw = localStorage.getItem(key);
+            return raw ? JSON.parse(raw) : null;
+        } catch {
+            return null;
+        }
+    };
+
+    const clientesAntigos = lerLegado(LEGACY_STORAGE_KEYS.CLIENTES) || [];
+    const processosAntigos = lerLegado(LEGACY_STORAGE_KEYS.PROCESSOS) || [];
+    const prazosAntigos = lerLegado(LEGACY_STORAGE_KEYS.PRAZOS) || [];
+    const honorariosAntigos = lerLegado(LEGACY_STORAGE_KEYS.HONORARIOS) || [];
+    const feriadosAntigos = lerLegado(LEGACY_STORAGE_KEYS.FERIADOS_CUSTOM) || [];
+    const configAntiga = lerLegado(LEGACY_STORAGE_KEYS.CONFIG);
+
+    for (const cliente of clientesAntigos) await apiRequest('POST', '/api/data/clientes', cliente);
+    for (const processo of processosAntigos) await apiRequest('POST', '/api/data/processos', processo);
+    for (const prazo of prazosAntigos) await apiRequest('POST', '/api/data/prazos', prazo);
+    for (const honorario of honorariosAntigos) await apiRequest('POST', '/api/data/honorarios', honorario);
+    for (const feriado of feriadosAntigos) await apiRequest('POST', '/api/data/feriados', feriado);
+    if (configAntiga) await apiRequest('PUT', '/api/data/config', configAntiga);
+
+    Object.values(LEGACY_STORAGE_KEYS).forEach(key => localStorage.removeItem(key));
+
+    await carregarDadosDoServidor();
+
+    return {
+        clientes: clientesAntigos.length,
+        processos: processosAntigos.length,
+        prazos: prazosAntigos.length,
+        honorarios: honorariosAntigos.length,
+        feriados: feriadosAntigos.length
+    };
 }

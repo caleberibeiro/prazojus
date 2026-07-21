@@ -289,22 +289,22 @@ function showDayPopup(date, prazos) {
 // Helpers para ações do calendário
 // ============================================================
 
-function handleMarcarCumprido(prazoId) {
-    marcarPrazoCumprido(prazoId);
+async function handleMarcarCumprido(prazoId) {
+    await marcarPrazoCumprido(prazoId);
     closeModal();
     renderCalendar();
     showToast('Prazo marcado como cumprido!', 'success', 6000, {
         label: 'Desfazer',
-        onClick: () => {
-            marcarPrazoPendente(prazoId);
+        onClick: async () => {
+            await marcarPrazoPendente(prazoId);
             renderCalendar();
             showToast('Prazo reaberto.', 'info');
         }
     });
 }
 
-function handleMarcarPendente(prazoId) {
-    marcarPrazoPendente(prazoId);
+async function handleMarcarPendente(prazoId) {
+    await marcarPrazoPendente(prazoId);
     closeModal();
     renderCalendar();
     showToast('Prazo reaberto.', 'info');
