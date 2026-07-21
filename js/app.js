@@ -17,8 +17,47 @@ let appState = {
 document.addEventListener('DOMContentLoaded', () => {
     initRouter();
     initSidebar();
+    loadCurrentUser();
     renderPage(getPageFromHash());
 });
+
+// ============================================================
+// Sessão do usuário logado
+// ============================================================
+
+async function loadCurrentUser() {
+    try {
+        const response = await fetch('/api/auth/me');
+        if (!response.ok) return;
+
+        const usuario = await response.json();
+        appState.currentUser = usuario;
+
+        const iniciais = (usuario.nome || usuario.username || '?')
+            .trim()
+            .split(/\s+/)
+            .slice(0, 2)
+            .map(p => p[0].toUpperCase())
+            .join('');
+
+        const avatar = document.getElementById('sidebar-user-avatar');
+        const nome = document.getElementById('sidebar-user-name');
+        if (avatar) avatar.textContent = iniciais;
+        if (nome) nome.textContent = usuario.nome || usuario.username;
+    } catch (error) {
+        console.error('Erro ao carregar usuário logado:', error);
+    }
+}
+
+async function handleLogout() {
+    if (!confirm('Deseja sair do PrazoJus?')) return;
+
+    try {
+        await fetch('/api/auth/logout', { method: 'POST' });
+    } finally {
+        window.location.href = '/login.html';
+    }
+}
 
 // ============================================================
 // Roteamento SPA (hash-based)
@@ -838,7 +877,25 @@ function renderConfig() {
                 `).join('') : '<p class="text-muted">Nenhum feriado customizado adicionado.</p>'}
             </div>
         </div>
+
+        <div class="config-section mt-4">
+            <h3>👥 Equipe</h3>
+            <p class="text-muted" style="font-size: 0.85rem; margin-bottom: 1rem;">
+                Contas com acesso ao sistema. Cada pessoa da equipe deve ter seu próprio usuário e senha.
+            </p>
+            <div class="form-row mb-2">
+                <input type="text" id="equipe-nome" class="form-input" placeholder="Nome">
+                <input type="text" id="equipe-username" class="form-input" placeholder="Usuário (login)">
+                <input type="password" id="equipe-senha" class="form-input" placeholder="Senha (mín. 6 caracteres)">
+            </div>
+            <button class="btn btn-primary btn-sm mb-2" onclick="handleAddUsuario()">+ Adicionar à Equipe</button>
+            <div id="equipe-list">
+                <p class="text-muted">Carregando...</p>
+            </div>
+        </div>
     `;
+
+    carregarEquipe();
 }
 
 function toggleApiKeyVisibility() {
@@ -856,6 +913,89 @@ async function handleTestarConexao() {
     const apiKey = document.getElementById('config-apikey').value.trim();
     if (apiKey) saveApiKey(apiKey);
     await testarConexaoAPI();
+}
+
+// ============================================================
+// EQUIPE — gerenciamento de usuários com acesso ao sistema
+// ============================================================
+
+async function carregarEquipe() {
+    const listaDiv = document.getElementById('equipe-list');
+    if (!listaDiv) return;
+
+    try {
+        const response = await fetch('/api/auth/users');
+        if (!response.ok) throw new Error('Erro ao carregar a lista de usuários.');
+        const usuarios = await response.json();
+
+        listaDiv.innerHTML = usuarios.map(u => {
+            const souEu = appState.currentUser && appState.currentUser.id === u.id;
+            return `
+                <div class="flex-between" style="padding: 0.5rem 0; border-bottom: 1px solid rgba(255,255,255,0.05);">
+                    <span>
+                        <strong>${escapeHtml(u.nome)}</strong>
+                        <span class="text-muted"> · @${escapeHtml(u.username)}</span>
+                        ${souEu ? '<span class="badge badge-info"> você</span>' : ''}
+                    </span>
+                    ${!souEu ? `<button class="btn btn-sm btn-danger" onclick="handleRemoveUsuario('${u.id}')">✕</button>` : ''}
+                </div>
+            `;
+        }).join('');
+    } catch (error) {
+        listaDiv.innerHTML = `<p class="text-muted">${escapeHtml(error.message)}</p>`;
+    }
+}
+
+async function handleAddUsuario() {
+    const nome = document.getElementById('equipe-nome').value.trim();
+    const username = document.getElementById('equipe-username').value.trim();
+    const senha = document.getElementById('equipe-senha').value;
+
+    if (!username || !senha) {
+        showToast('Preencha usuário e senha.', 'warning');
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/auth/users', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ nome, username, password: senha })
+        });
+        const dados = await response.json();
+
+        if (!response.ok) {
+            showToast(dados.mensagem || 'Erro ao criar usuário.', 'error');
+            return;
+        }
+
+        showToast(`Usuário "${username}" adicionado à equipe!`, 'success');
+        document.getElementById('equipe-nome').value = '';
+        document.getElementById('equipe-username').value = '';
+        document.getElementById('equipe-senha').value = '';
+        carregarEquipe();
+    } catch (error) {
+        showToast('Erro ao criar usuário.', 'error');
+    }
+}
+
+async function handleRemoveUsuario(id) {
+    if (!confirm('Remover o acesso desta pessoa ao sistema?')) return;
+
+    try {
+        const response = await fetch(`/api/auth/users/${id}`, { method: 'DELETE' });
+        const dados = await response.json();
+
+        if (!response.ok) {
+            showToast(dados.mensagem || 'Erro ao remover usuário.', 'error');
+            return;
+        }
+
+        showToast('Usuário removido.', 'info');
+        carregarEquipe();
+    } catch (error) {
+        showToast('Erro ao remover usuário.', 'error');
+    }
 }
 
 async function handleImportFile(input) {

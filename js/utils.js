@@ -10,6 +10,25 @@
  */
 
 // ============================================================================
+// SESSÃO — redireciona para o login se qualquer chamada de API expirar
+// ============================================================================
+
+(function interceptarSessaoExpirada() {
+    const fetchOriginal = window.fetch.bind(window);
+
+    window.fetch = async (...args) => {
+        const resposta = await fetchOriginal(...args);
+        const url = typeof args[0] === 'string' ? args[0] : args[0]?.url || '';
+
+        if (resposta.status === 401 && !url.includes('/api/auth/')) {
+            window.location.href = '/login.html';
+        }
+
+        return resposta;
+    };
+})();
+
+// ============================================================================
 // GERAÇÃO DE IDS
 // ============================================================================
 
